@@ -193,3 +193,25 @@ HAL_StatusTypeDef CC1101_ReadStatusRegister(
 
     return result;
 }
+
+HAL_StatusTypeDef CC1101_Strobe(
+    SPI_HandleTypeDef *hspi,
+    uint8_t command)
+{
+    uint8_t status = 0;
+    HAL_StatusTypeDef result = CC1101_Select();
+
+    if (result == HAL_OK)
+    {
+        result = HAL_SPI_TransmitReceive(
+            hspi,
+            &command,
+            &status,
+            1,
+            CC1101_SPI_TIMEOUT
+        );
+    }
+
+    CC1101_Deselect();
+    return result;
+}

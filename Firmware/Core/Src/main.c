@@ -97,6 +97,134 @@ int main(void)
   MX_SPI1_Init();
   /* USER CODE BEGIN 2 */
 
+static const uint8_t uart_banner[] =
+    "\r\nUART2 ready at 115200 8-N-1\r\n";
+
+HAL_UART_Transmit(
+    &huart2,
+    (uint8_t *)uart_banner, // Address of the message
+    sizeof(uart_banner) - 1U, // Minus 1 to exclude the null terminator
+    HAL_MAX_DELAY
+);
+
+// Report Buffer
+char message[320];
+
+uint8_t part_number = 0;
+uint8_t version = 0;
+uint8_t packet_length_before = 0;
+uint8_t packet_length_after = 0;
+uint8_t packet_length_restored = 0;
+
+HAL_StatusTypeDef reset_result;
+HAL_StatusTypeDef part_result;
+HAL_StatusTypeDef version_result;
+HAL_StatusTypeDef write_result;
+
+reset_result = CC1101_Reset(&hspi1);
+
+part_result = CC1101_ReadStatusRegister(
+    &hspi1, 
+    CC1101_PARTNUM,
+    &part_number
+);
+
+version_result = CC1101_ReadStatusRegister(
+    &hspi1,
+    CC1101_VERSION,
+    &version
+);
+
+/* Verify ordinary register reading and writing. */
+
+CC1101_ReadRegister(
+    &hspi1,
+    CC1101_PKTLEN,
+    &packet_length_before
+);
+
+write_result = CC1101_WriteRegister(
+    &hspi1,
+    CC1101_PKTLEN,
+    0xA5
+);
+
+CC1101_ReadRegister(
+    &hspi1,
+    CC1101_PKTLEN,
+    &packet_length_after
+);
+
+/* Restore the reset value. */
+
+CC1101_WriteRegister(
+    &hspi1,
+    CC1101_PKTLEN,
+    packet_length_before
+);
+
+CC1101_ReadRegister(
+    &hspi1,
+    CC1101_PKTLEN,
+    &packet_length_restored
+);
+
+/* Repeated-read reliability test. */
+
+uint32_t read_errors = 0;
+
+for (uint32_t i = 0; i < 1000; i++)
+{
+    uint8_t current_version = 0;
+
+    if (CC1101_ReadStatusRegister(
+            &hspi1,
+            CC1101_VERSION,
+            &current_version) != HAL_OK || current_version != version)
+    {
+        read_errors++;
+    }
+}
+
+int length = snprintf(
+    message,
+    sizeof(message),
+    "\r\nCC1101 connection test\r\n"
+    "Reset status: %d\r\n"
+    "PARTNUM status: %d, value: 0x%02X\r\n"
+    "VERSION status: %d, value: 0x%02X\r\n"
+    "PKTLEN before: 0x%02X\r\n"
+    "PKTLEN written: 0x%02X\r\n"
+    "PKTLEN restored: 0x%02X\r\n"
+    "Write status: %d\r\n"
+    "Repeated-read errors: %lu / 1000\r\n",
+    reset_result,
+    part_result,
+    part_number,
+    version_result,
+    version,
+    packet_length_before,
+    packet_length_after,
+    packet_length_restored,
+    write_result,
+    read_errors
+);
+
+if (length > 0)
+{
+    uint16_t transmit_length =
+        (length < (int)sizeof(message))
+            ? (uint16_t)length
+            : (uint16_t)(sizeof(message) - 1U);
+
+    HAL_UART_Transmit(
+        &huart2,
+        (uint8_t *)message,
+        transmit_length,
+        HAL_MAX_DELAY
+    );
+}
+
   /* USER CODE END 2 */
 
   /* Infinite loop */
@@ -179,7 +307,7 @@ static void MX_SPI1_Init(void)
   hspi1.Init.CLKPolarity = SPI_POLARITY_LOW;
   hspi1.Init.CLKPhase = SPI_PHASE_1EDGE;
   hspi1.Init.NSS = SPI_NSS_SOFT;
-  hspi1.Init.BaudRatePrescaler = SPI_BAUDRATEPRESCALER_2;
+  hspi1.Init.BaudRatePrescaler = SPI_BAUDRATEPRESCALER_16;
   hspi1.Init.FirstBit = SPI_FIRSTBIT_MSB;
   hspi1.Init.TIMode = SPI_TIMODE_DISABLE;
   hspi1.Init.CRCCalculation = SPI_CRCCALCULATION_DISABLE;
@@ -246,7 +374,7 @@ static void MX_GPIO_Init(void)
   __HAL_RCC_GPIOB_CLK_ENABLE();
 
   /*Configure GPIO pin Output Level */
-  HAL_GPIO_WritePin(CC1101_CSN_GPIO_Port, CC1101_CSN_Pin, GPIO_PIN_RESET);
+  HAL_GPIO_WritePin(CC1101_CSN_GPIO_Port, CC1101_CSN_Pin, GPIO_PIN_SET);
 
   /*Configure GPIO pin : B1_Pin */
   GPIO_InitStruct.Pin = B1_Pin;

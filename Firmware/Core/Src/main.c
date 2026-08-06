@@ -224,6 +224,95 @@ if (length > 0)
         HAL_MAX_DELAY
     );
 }
+// Configure the CC1101 carrier frequency for approximately 915 MHz. These values assume a 26 MHz CC1101 crystal.
+// Frequency = FREQ × 26 MHz / 2^16
+// FREQ word = 0x23313B
+HAL_StatusTypeDef receiver_result =
+    CC1101_WriteRegister(
+        &hspi1,
+        CC1101_FREQ2,
+        0x23
+    );
+
+if (receiver_result == HAL_OK)
+{
+    receiver_result = CC1101_WriteRegister(
+        &hspi1,
+        CC1101_FREQ1,
+        0x31
+    );
+}
+
+if (receiver_result == HAL_OK)
+{
+    receiver_result = CC1101_WriteRegister(
+        &hspi1,
+        CC1101_FREQ0,
+        0x3B
+    );
+}
+
+/*
+ * Stage 2 only measures RSSI. Use asynchronous serial mode so the
+ * packet handler and RX FIFO cannot fill with noise or unwanted packets.
+ */
+uint8_t packet_control = 0;
+
+if (receiver_result == HAL_OK)
+{
+    receiver_result = CC1101_ReadRegister(
+        &hspi1,
+        CC1101_PKTCTRL0,
+        &packet_control
+    );
+}
+
+if (receiver_result == HAL_OK)
+{
+    packet_control =
+        (packet_control & (uint8_t)~CC1101_PKT_FORMAT_MASK) |
+        CC1101_PKT_FORMAT_ASYNC;
+
+    receiver_result = CC1101_WriteRegister(
+        &hspi1,
+        CC1101_PKTCTRL0,
+        packet_control
+    );
+}
+
+// Enter receive mode
+if (receiver_result == HAL_OK)
+{
+    receiver_result = CC1101_Strobe(
+        &hspi1,
+        CC1101_SRX
+    );
+}
+
+//Allow calibration and receiver settling
+HAL_Delay(5);
+
+int receiver_length = snprintf(
+    message,
+    sizeof(message),
+    "915 MHz receiver configuration status: %d\r\n",
+    receiver_result
+);
+
+if (receiver_length > 0)
+{
+    uint16_t receiver_transmit_length =
+        receiver_length < (int)sizeof(message)
+            ? (uint16_t)receiver_length
+            : (uint16_t)(sizeof(message) - 1U);
+
+    HAL_UART_Transmit(
+        &huart2,
+        (uint8_t *)message,
+        receiver_transmit_length,
+        HAL_MAX_DELAY
+    );
+}
 
   /* USER CODE END 2 */
 
@@ -234,10 +323,133 @@ if (length > 0)
     /* USER CODE END WHILE */
 
     /* USER CODE BEGIN 3 */
+    if (receiver_result == HAL_OK)
+    {
+        uint8_t rssi_raw = 0;
+        uint8_t marcstate = 0;
+
+        HAL_StatusTypeDef rssi_result =
+            CC1101_ReadStatusRegister(
+                &hspi1,
+                CC1101_RSSI,
+                &rssi_raw
+            );
+
+        HAL_StatusTypeDef state_result =
+            CC1101_ReadStatusRegister(
+                &hspi1,
+                CC1101_MARCSTATE,
+                &marcstate
+            );
+
+        /* Only bits 4:0 contain the radio state. */
+        marcstate &= 0x1FU;
+        
+        if (state_result == HAL_OK &&
+            (marcstate == CC1101_STATE_IDLE ||
+             marcstate == CC1101_STATE_RXFIFO_OVERFLOW))
+        {
+            HAL_StatusTypeDef recovery_result =
+                CC1101_Strobe(
+                    &hspi1,
+                    CC1101_SFRX
+                );
+
+            if (recovery_result == HAL_OK)
+            {
+                recovery_result = CC1101_Strobe(
+                    &hspi1,
+                    CC1101_SRX
+                );
+            }
+
+            HAL_Delay(5);
+
+            char recovery_message[96];
+            int recovery_length = snprintf(
+                recovery_message,
+                sizeof(recovery_message),
+                "Receiver left RX in state 0x%02X; recovery status: %d\r\n",
+                (unsigned int)marcstate,
+                recovery_result
+            );
+
+            if (recovery_length > 0)
+            {
+                uint16_t recovery_transmit_length =
+                    recovery_length < (int)sizeof(recovery_message)
+                        ? (uint16_t)recovery_length
+                        : (uint16_t)(sizeof(recovery_message) - 1U);
+
+                HAL_UART_Transmit(
+                    &huart2,
+                    (uint8_t *)recovery_message,
+                    recovery_transmit_length,
+                    HAL_MAX_DELAY
+                );
+            }
+
+            HAL_Delay(250);
+            continue;
+        }
+
+        if (rssi_result == HAL_OK &&
+            state_result == HAL_OK)
+        {
+            /*
+             * Interpret RSSI as signed two's complement.
+             * This produces an approximate whole-number dBm value.
+             */
+            int16_t rssi_dbm =
+                ((int16_t)(int8_t)rssi_raw / 2) - 74;
+
+            char rssi_message[100];
+
+            int rssi_length = snprintf(
+                rssi_message,
+                sizeof(rssi_message),
+                "RSSI: 0x%02X, approx %d dBm, "
+                "MARCSTATE: 0x%02X%s\r\n",
+                (unsigned int)rssi_raw,
+                (int)rssi_dbm,
+                (unsigned int)marcstate,
+                marcstate == CC1101_STATE_RX
+                    ? " (RX)"
+                    : " (NOT RX)"
+            );
+
+            if (rssi_length > 0)
+            {
+                uint16_t rssi_transmit_length =
+                    rssi_length < (int)sizeof(rssi_message)
+                        ? (uint16_t)rssi_length
+                        : (uint16_t)(sizeof(rssi_message) - 1U);
+
+                HAL_UART_Transmit(
+                    &huart2,
+                    (uint8_t *)rssi_message,
+                    rssi_transmit_length,
+                    HAL_MAX_DELAY
+                );
+            }
+        }
+        else
+        {
+            static const uint8_t read_error[] =
+                "RSSI or MARCSTATE read failed\r\n";
+
+            HAL_UART_Transmit(
+                &huart2,
+                (uint8_t *)read_error,
+                sizeof(read_error) - 1U,
+                HAL_MAX_DELAY
+            );
+        }
+    }
+    HAL_Delay(250);
   }
   /* USER CODE END 3 */
 }
-
 /**
   * @brief System Clock Configuration
   * @retval None

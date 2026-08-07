@@ -20,8 +20,6 @@
 /* Read-only status registers. */
 #define CC1101_RSSI 0x34U 
 #define CC1101_MARCSTATE 0x35U
-#define CC1101_STATE_IDLE 0x01U
-#define CC1101_STATE_RXFIFO_OVERFLOW 0x11U
 
 /* Command strobes. */
 #define CC1101_SRES 0x30U  // Reset command strobe
@@ -31,6 +29,8 @@
 
 /* Expected MARCSTATE value while receiving. */
 #define CC1101_STATE_RX 0x0DU
+#define CC1101_STATE_IDLE 0x01U
+#define CC1101_STATE_RXFIFO_OVERFLOW 0x11U
 
 
 HAL_StatusTypeDef CC1101_Reset(SPI_HandleTypeDef *hspi);

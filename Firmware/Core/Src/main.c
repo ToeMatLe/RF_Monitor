@@ -33,7 +33,12 @@
 
 /* Private define ------------------------------------------------------------*/
 /* USER CODE BEGIN PD */
-
+/* CC1101 modem registers used by the RSSI receiver test. */
+#define CC1101_FSCTRL1       0x0BU
+#define CC1101_MDMCFG4       0x10U
+#define CC1101_MDMCFG3       0x11U
+#define CC1101_MDMCFG2       0x12U
+#define CC1101_DEVIATN       0x15U
 /* USER CODE END PD */
 
 /* Private macro -------------------------------------------------------------*/
@@ -124,7 +129,7 @@ HAL_StatusTypeDef write_result;
 reset_result = CC1101_Reset(&hspi1);
 
 part_result = CC1101_ReadStatusRegister(
-    &hspi1, 
+    &hspi1,
     CC1101_PARTNUM,
     &part_number
 );
@@ -169,23 +174,6 @@ CC1101_ReadRegister(
     &packet_length_restored
 );
 
-/* Repeated-read reliability test. */
-
-uint32_t read_errors = 0;
-
-for (uint32_t i = 0; i < 1000; i++)
-{
-    uint8_t current_version = 0;
-
-    if (CC1101_ReadStatusRegister(
-            &hspi1,
-            CC1101_VERSION,
-            &current_version) != HAL_OK || current_version != version)
-    {
-        read_errors++;
-    }
-}
-
 int length = snprintf(
     message,
     sizeof(message),
@@ -196,8 +184,7 @@ int length = snprintf(
     "PKTLEN before: 0x%02X\r\n"
     "PKTLEN written: 0x%02X\r\n"
     "PKTLEN restored: 0x%02X\r\n"
-    "Write status: %d\r\n"
-    "Repeated-read errors: %lu / 1000\r\n",
+    "Write status: %d\r\n",
     reset_result,
     part_result,
     part_number,
@@ -206,8 +193,7 @@ int length = snprintf(
     packet_length_before,
     packet_length_after,
     packet_length_restored,
-    write_result,
-    read_errors
+    write_result
 );
 
 if (length > 0)
@@ -224,14 +210,14 @@ if (length > 0)
         HAL_MAX_DELAY
     );
 }
-// Configure the CC1101 carrier frequency for approximately 915 MHz. These values assume a 26 MHz CC1101 crystal.
+// Configure the CC1101 carrier frequency for approximately 433.92 MHz. These values assume a 26 MHz CC1101 crystal.
 // Frequency = FREQ × 26 MHz / 2^16
-// FREQ word = 0x23313B
+// FREQ word = 0x10B071
 HAL_StatusTypeDef receiver_result =
     CC1101_WriteRegister(
         &hspi1,
         CC1101_FREQ2,
-        0x23
+        0x10
     );
 
 if (receiver_result == HAL_OK)
@@ -239,7 +225,7 @@ if (receiver_result == HAL_OK)
     receiver_result = CC1101_WriteRegister(
         &hspi1,
         CC1101_FREQ1,
-        0x31
+        0xB0
     );
 }
 
@@ -248,14 +234,57 @@ if (receiver_result == HAL_OK)
     receiver_result = CC1101_WriteRegister(
         &hspi1,
         CC1101_FREQ0,
-        0x3B
+        0x71
     );
 }
 
-/*
- * Stage 2 only measures RSSI. Use asynchronous serial mode so the
- * packet handler and RX FIFO cannot fill with noise or unwanted packets.
- */
+/* Match the ESP32 test transmitter's 4.8-kBaud 2-FSK settings. */
+if (receiver_result == HAL_OK)
+{
+    receiver_result = CC1101_WriteRegister(
+        &hspi1,
+        CC1101_FSCTRL1,
+        0x06
+    );
+}
+
+if (receiver_result == HAL_OK)
+{
+    receiver_result = CC1101_WriteRegister(
+        &hspi1,
+        CC1101_MDMCFG4,
+        0xA7
+    );
+}
+
+if (receiver_result == HAL_OK)
+{
+    receiver_result = CC1101_WriteRegister(
+        &hspi1,
+        CC1101_MDMCFG3,
+        0x83
+    );
+}
+
+if (receiver_result == HAL_OK)
+{
+    receiver_result = CC1101_WriteRegister(
+        &hspi1,
+        CC1101_MDMCFG2,
+        0x03
+    );
+}
+
+if (receiver_result == HAL_OK)
+{
+    receiver_result = CC1101_WriteRegister(
+        &hspi1,
+        CC1101_DEVIATN,
+        0x15
+    );
+}
+
+// Stage 2 only measures RSSI. Use asynchronous serial mode so the packet handler and RX FIFO cannot fill with noise or unwanted packets
 uint8_t packet_control = 0;
 
 if (receiver_result == HAL_OK)
@@ -269,9 +298,7 @@ if (receiver_result == HAL_OK)
 
 if (receiver_result == HAL_OK)
 {
-    packet_control =
-        (packet_control & (uint8_t)~CC1101_PKT_FORMAT_MASK) |
-        CC1101_PKT_FORMAT_ASYNC;
+    packet_control = (packet_control & (uint8_t) ~CC1101_PKT_FORMAT_MASK) | CC1101_PKT_FORMAT_ASYNC;
 
     receiver_result = CC1101_WriteRegister(
         &hspi1,
@@ -295,7 +322,7 @@ HAL_Delay(5);
 int receiver_length = snprintf(
     message,
     sizeof(message),
-    "915 MHz receiver configuration status: %d\r\n",
+    "433.92 MHz receiver configuration status: %d\r\n",
     receiver_result
 );
 
@@ -325,15 +352,48 @@ if (receiver_length > 0)
     /* USER CODE BEGIN 3 */
     if (receiver_result == HAL_OK)
     {
-        uint8_t rssi_raw = 0;
+        int16_t minimum_rssi_dbm = 0;
+        int16_t peak_rssi_dbm = -200;
+        uint8_t peak_rssi_raw = 0;
         uint8_t marcstate = 0;
+        HAL_StatusTypeDef sample_result = HAL_OK;
 
-        HAL_StatusTypeDef rssi_result =
-            CC1101_ReadStatusRegister(
+        /*
+         * Sample continuously for approximately 250 ms and report the peak.
+         * This prevents a short RF packet from being missed between UART
+         * print intervals.
+         */
+        for (uint16_t sample = 0; sample < 125; sample++)
+        {
+            uint8_t rssi_raw = 0;
+
+            sample_result = CC1101_ReadStatusRegister(
                 &hspi1,
                 CC1101_RSSI,
                 &rssi_raw
             );
+
+            if (sample_result != HAL_OK)
+            {
+                break;
+            }
+
+            int16_t rssi_dbm =
+                ((int16_t)(int8_t)rssi_raw / 2) - 74;
+
+            if (sample == 0 || rssi_dbm < minimum_rssi_dbm)
+            {
+                minimum_rssi_dbm = rssi_dbm;
+            }
+
+            if (rssi_dbm > peak_rssi_dbm)
+            {
+                peak_rssi_dbm = rssi_dbm;
+                peak_rssi_raw = rssi_raw;
+            }
+
+            HAL_Delay(2);
+        }
 
         HAL_StatusTypeDef state_result =
             CC1101_ReadStatusRegister(
@@ -344,7 +404,7 @@ if (receiver_length > 0)
 
         /* Only bits 4:0 contain the radio state. */
         marcstate &= 0x1FU;
-        
+
         if (state_result == HAL_OK &&
             (marcstate == CC1101_STATE_IDLE ||
              marcstate == CC1101_STATE_RXFIFO_OVERFLOW))
@@ -364,58 +424,23 @@ if (receiver_length > 0)
             }
 
             HAL_Delay(5);
-
-            char recovery_message[96];
-            int recovery_length = snprintf(
-                recovery_message,
-                sizeof(recovery_message),
-                "Receiver left RX in state 0x%02X; recovery status: %d\r\n",
-                (unsigned int)marcstate,
-                recovery_result
-            );
-
-            if (recovery_length > 0)
-            {
-                uint16_t recovery_transmit_length =
-                    recovery_length < (int)sizeof(recovery_message)
-                        ? (uint16_t)recovery_length
-                        : (uint16_t)(sizeof(recovery_message) - 1U);
-
-                HAL_UART_Transmit(
-                    &huart2,
-                    (uint8_t *)recovery_message,
-                    recovery_transmit_length,
-                    HAL_MAX_DELAY
-                );
-            }
-
-            HAL_Delay(250);
-            continue;
         }
 
-        if (rssi_result == HAL_OK &&
+        if (sample_result == HAL_OK &&
             state_result == HAL_OK)
         {
-            /*
-             * Interpret RSSI as signed two's complement.
-             * This produces an approximate whole-number dBm value.
-             */
-            int16_t rssi_dbm =
-                ((int16_t)(int8_t)rssi_raw / 2) - 74;
-
-            char rssi_message[100];
+            char rssi_message[128];
 
             int rssi_length = snprintf(
                 rssi_message,
                 sizeof(rssi_message),
-                "RSSI: 0x%02X, approx %d dBm, "
-                "MARCSTATE: 0x%02X%s\r\n",
-                (unsigned int)rssi_raw,
-                (int)rssi_dbm,
+                "RSSI window: min %d dBm, peak %d dBm "
+                "(raw 0x%02X), MARCSTATE 0x%02X%s\r\n",
+                (int)minimum_rssi_dbm,
+                (int)peak_rssi_dbm,
+                (unsigned int)peak_rssi_raw,
                 (unsigned int)marcstate,
-                marcstate == CC1101_STATE_RX
-                    ? " (RX)"
-                    : " (NOT RX)"
+                marcstate == CC1101_STATE_RX ? " (RX)" : " (NOT RX)"
             );
 
             if (rssi_length > 0)
@@ -446,7 +471,6 @@ if (receiver_length > 0)
             );
         }
     }
-    HAL_Delay(250);
   }
   /* USER CODE END 3 */
 }

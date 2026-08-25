@@ -39,6 +39,7 @@
 #define CC1101_MDMCFG3       0x11U
 #define CC1101_MDMCFG2       0x12U
 #define CC1101_DEVIATN       0x15U
+#define CC1101_SCAL          0x33U
 /* USER CODE END PD */
 
 /* Private macro -------------------------------------------------------------*/
@@ -307,7 +308,31 @@ if (receiver_result == HAL_OK)
     );
 }
 
-// Enter receive mode
+/*
+ * Explicitly calibrate the frequency synthesizer before entering RX.
+ * The frequency-sweep firmware uses this sequence at every tuning step and
+ * reliably detects the 433.92 MHz carrier. Do not rely on the reset-default
+ * automatic calibration setting here.
+ */
+if (receiver_result == HAL_OK)
+{
+    receiver_result = CC1101_Strobe(
+        &hspi1,
+        CC1101_SIDLE
+    );
+}
+
+if (receiver_result == HAL_OK)
+{
+    receiver_result = CC1101_Strobe(
+        &hspi1,
+        CC1101_SCAL
+    );
+}
+
+/* CC1101 calibration completes in under 1 ms; leave extra margin. */
+HAL_Delay(3);
+
 if (receiver_result == HAL_OK)
 {
     receiver_result = CC1101_Strobe(
@@ -316,7 +341,7 @@ if (receiver_result == HAL_OK)
     );
 }
 
-//Allow calibration and receiver settling
+/* Allow the receiver AGC and RSSI measurement to settle. */
 HAL_Delay(5);
 
 int receiver_length = snprintf(

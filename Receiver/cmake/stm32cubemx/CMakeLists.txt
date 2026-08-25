@@ -17,9 +17,15 @@ set(MX_Include_Dirs
     ${CMAKE_CURRENT_SOURCE_DIR}/../../Drivers/CMSIS/Include
 )
 
+# Allow a standalone firmware variant to provide its own main.c while reusing
+# the CubeMX-generated startup, interrupt, and HAL support files.
+if(NOT DEFINED MX_APPLICATION_MAIN)
+    set(MX_APPLICATION_MAIN ${CMAKE_CURRENT_SOURCE_DIR}/../../Core/Src/main.c)
+endif()
+
 # STM32CubeMX generated application sources
 set(MX_Application_Src
-    ${CMAKE_CURRENT_SOURCE_DIR}/../../Core/Src/main.c
+    ${MX_APPLICATION_MAIN}
     ${CMAKE_CURRENT_SOURCE_DIR}/../../Core/Src/stm32f4xx_it.c
     ${CMAKE_CURRENT_SOURCE_DIR}/../../Core/Src/stm32f4xx_hal_msp.c
     ${CMAKE_CURRENT_SOURCE_DIR}/../../Core/Src/sysmem.c

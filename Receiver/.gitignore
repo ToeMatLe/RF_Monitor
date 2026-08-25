@@ -14,3 +14,7 @@ mx.scratch
 **/Debug/
 **/Release/
 cmake-build-*/
+
+.clangd
+CMAKELists.txt
+CMakePresets.json

@@ -1,0 +1,20 @@
+build
+mx.scratch
+!.settings
+
+# Editor/compiler caches
+.cache/
+compile_commands.json
+
+# STM32CubeMX temporary files
+mx.scratch
+
+# Build output
+**/build/
+**/Debug/
+**/Release/
+cmake-build-*/
+
+.clangd
+CMAKELists.txt
+CMakePresets.json

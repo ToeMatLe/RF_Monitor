@@ -1,0 +1,36 @@
+# macOS
+.DS_Store
+
+# STM32CubeIDE workspace and Eclipse metadata
+.metadata/
+**/.settings/
+**/.project
+**/.cproject
+
+# CMake/build output
+**/build/
+**/Debug/
+**/Release/
+cmake-build-*/
+
+# Compiled firmware
+*.o
+*.d
+*.a
+*.elf
+*.bin
+*.hex
+*.map
+*.list
+
+# Local VS Code configuration
+.vscode/
+**/.vscode/
+
+# Accidentally generated IAR project
+**/EWARM/
+
+# Temporary files
+*.tmp
+*.log
+*~

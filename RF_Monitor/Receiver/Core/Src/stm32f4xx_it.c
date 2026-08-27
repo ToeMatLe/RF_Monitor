@@ -22,6 +22,7 @@
 #include "stm32f4xx_it.h"
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
+#include "rf_sampler.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -199,5 +200,13 @@ void SysTick_Handler(void)
 /******************************************************************************/
 
 /* USER CODE BEGIN 1 */
+
+/**
+  * @brief This function handles the 1 kHz RSSI sampling timer.
+  */
+void TIM2_IRQHandler(void)
+{
+  RF_Sampler_TimerIRQHandler();
+}
 
 /* USER CODE END 1 */

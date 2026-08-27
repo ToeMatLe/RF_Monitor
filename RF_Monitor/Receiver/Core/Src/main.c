@@ -22,6 +22,7 @@
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
 #include "cc1101.h"
+#include "rf_sampler.h"
 #include <stdio.h>
 #include <string.h>
 /* USER CODE END Includes */
@@ -53,7 +54,8 @@ SPI_HandleTypeDef hspi1;
 UART_HandleTypeDef huart2;
 
 /* USER CODE BEGIN PV */
-
+static int16_t rssi_window[RF_SAMPLER_WINDOW_SIZE];
+static uint32_t window_sequence;
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -67,6 +69,82 @@ static void MX_SPI1_Init(void);
 
 /* Private user code ---------------------------------------------------------*/
 /* USER CODE BEGIN 0 */
+
+static void UART_Write(const char *data, uint16_t length)
+{
+  HAL_UART_Transmit(
+      &huart2,
+      (uint8_t *)data,
+      length,
+      HAL_MAX_DELAY
+  );
+}
+
+static void UART_PrintWindow(uint32_t overruns)
+{
+  char output[160];
+  int length = snprintf(
+      output,
+      sizeof(output),
+      "WINDOW_START sequence=%lu count=%u rate_hz=%u "
+      "unit=half_dbm overruns=%lu\r\n",
+      (unsigned long)window_sequence,
+      (unsigned int)RF_SAMPLER_WINDOW_SIZE,
+      (unsigned int)RF_SAMPLER_RATE_HZ,
+      (unsigned long)overruns
+  );
+
+  if (length > 0)
+  {
+    UART_Write(
+        output,
+        (uint16_t)((length < (int)sizeof(output))
+            ? length
+            : (int)sizeof(output) - 1)
+    );
+  }
+
+  uint16_t output_used = 0U;
+
+  for (uint16_t index = 0U; index < RF_SAMPLER_WINDOW_SIZE; index++)
+  {
+    char sample_text[16];
+    int sample_length = snprintf(
+        sample_text,
+        sizeof(sample_text),
+        "%d%c",
+        (int)rssi_window[index],
+        (index + 1U == RF_SAMPLER_WINDOW_SIZE) ? '\n' : ','
+    );
+
+    if (sample_length <= 0)
+    {
+      continue;
+    }
+
+    uint16_t safe_sample_length =
+        (sample_length < (int)sizeof(sample_text))
+            ? (uint16_t)sample_length
+            : (uint16_t)(sizeof(sample_text) - 1U);
+
+    if ((uint16_t)(output_used + safe_sample_length) > sizeof(output))
+    {
+      UART_Write(output, output_used);
+      output_used = 0U;
+    }
+
+    memcpy(&output[output_used], sample_text, safe_sample_length);
+    output_used = (uint16_t)(output_used + safe_sample_length);
+  }
+
+  if (output_used > 0U)
+  {
+    UART_Write(output, output_used);
+  }
+
+  static const char window_end[] = "WINDOW_END\r\n";
+  UART_Write(window_end, sizeof(window_end) - 1U);
+}
 
 /* USER CODE END 0 */
 
@@ -366,6 +444,20 @@ if (receiver_length > 0)
     );
 }
 
+bool sampler_ready = RF_Sampler_Init();
+if (sampler_ready)
+{
+    static const char sampler_message[] =
+        "RSSI sampler ready: 1000 Hz, 512 samples per window\r\n";
+    UART_Write(sampler_message, sizeof(sampler_message) - 1U);
+}
+else
+{
+    static const char sampler_error[] =
+        "TIM2 RSSI sampler initialization failed\r\n";
+    UART_Write(sampler_error, sizeof(sampler_error) - 1U);
+}
+
   /* USER CODE END 2 */
 
   /* Infinite loop */
@@ -375,21 +467,25 @@ if (receiver_length > 0)
     /* USER CODE END WHILE */
 
     /* USER CODE BEGIN 3 */
-    if (receiver_result == HAL_OK)
+    if (receiver_result == HAL_OK && sampler_ready)
     {
-        int16_t minimum_rssi_dbm = 0;
-        int16_t peak_rssi_dbm = -200;
-        uint8_t peak_rssi_raw = 0;
+        uint16_t sample_index = 0U;
         uint8_t marcstate = 0;
         HAL_StatusTypeDef sample_result = HAL_OK;
 
         /*
-         * Sample continuously for approximately 250 ms and report the peak.
-         * This prevents a short RF packet from being missed between UART
-         * print intervals.
+         * TIM2 schedules one RSSI read every millisecond. SPI stays here in
+         * the main loop; the interrupt only creates a sample request.
          */
-        for (uint16_t sample = 0; sample < 125; sample++)
+        RF_Sampler_Start();
+
+        while (sample_index < RF_SAMPLER_WINDOW_SIZE)
         {
+            if (!RF_Sampler_TakeRequest())
+            {
+                continue;
+            }
+
             uint8_t rssi_raw = 0;
 
             sample_result = CC1101_ReadStatusRegister(
@@ -403,22 +499,14 @@ if (receiver_length > 0)
                 break;
             }
 
-            int16_t rssi_dbm =
-                ((int16_t)(int8_t)rssi_raw / 2) - 74;
-
-            if (sample == 0 || rssi_dbm < minimum_rssi_dbm)
-            {
-                minimum_rssi_dbm = rssi_dbm;
-            }
-
-            if (rssi_dbm > peak_rssi_dbm)
-            {
-                peak_rssi_dbm = rssi_dbm;
-                peak_rssi_raw = rssi_raw;
-            }
-
-            HAL_Delay(2);
+            /* One stored count equals 0.5 dB; -200 means -100.0 dBm. */
+            rssi_window[sample_index] =
+                (int16_t)(int8_t)rssi_raw - 148;
+            sample_index++;
         }
+
+        RF_Sampler_Stop();
+        uint32_t overruns = RF_Sampler_GetOverrunCount();
 
         HAL_StatusTypeDef state_result =
             CC1101_ReadStatusRegister(
@@ -452,41 +540,16 @@ if (receiver_length > 0)
         }
 
         if (sample_result == HAL_OK &&
-            state_result == HAL_OK)
+            state_result == HAL_OK &&
+            sample_index == RF_SAMPLER_WINDOW_SIZE)
         {
-            char rssi_message[128];
-
-            int rssi_length = snprintf(
-                rssi_message,
-                sizeof(rssi_message),
-                "RSSI window: min %d dBm, peak %d dBm "
-                "(raw 0x%02X), MARCSTATE 0x%02X%s\r\n",
-                (int)minimum_rssi_dbm,
-                (int)peak_rssi_dbm,
-                (unsigned int)peak_rssi_raw,
-                (unsigned int)marcstate,
-                marcstate == CC1101_STATE_RX ? " (RX)" : " (NOT RX)"
-            );
-
-            if (rssi_length > 0)
-            {
-                uint16_t rssi_transmit_length =
-                    rssi_length < (int)sizeof(rssi_message)
-                        ? (uint16_t)rssi_length
-                        : (uint16_t)(sizeof(rssi_message) - 1U);
-
-                HAL_UART_Transmit(
-                    &huart2,
-                    (uint8_t *)rssi_message,
-                    rssi_transmit_length,
-                    HAL_MAX_DELAY
-                );
-            }
+            window_sequence++;
+            UART_PrintWindow(overruns);
         }
         else
         {
             static const uint8_t read_error[] =
-                "RSSI or MARCSTATE read failed\r\n";
+                "RSSI window capture or MARCSTATE read failed\r\n";
 
             HAL_UART_Transmit(
                 &huart2,

@@ -34,3 +34,14 @@ cmake-build-*/
 *.tmp
 *.log
 *~
+
+# Local RF capture datasets and plots
+captures/
+tools/test_data/
+
+# Generated Python bytecode
+__pycache__/
+*.py[cod]
+
+__pycache__/
+*.py[cod]

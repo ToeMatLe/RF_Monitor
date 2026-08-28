@@ -11,6 +11,7 @@ constexpr int CC1101_GDO2 = 27;
 
 constexpr uint32_t STARTUP_QUIET_MS = 1000;
 constexpr uint32_t BURST_LENGTH_MS = 100;
+constexpr uint32_t BURST_GAP_MS = 1000;
 
 CC1101 radio = new Module(
   CC1101_CSN,
@@ -41,17 +42,17 @@ void setup() {
 
   pinMode(CC1101_GDO2, OUTPUT);
   digitalWrite(CC1101_GDO2, LOW);
+  Serial.println("SHORT_BURST loop active");
+}
 
-  state = radio.transmitDirect();
+void loop() {
+  int16_t state = radio.transmitDirect();
   haltOnError("Short burst start", state);
   Serial.println("SHORT_BURST on");
 
   delay(BURST_LENGTH_MS);
   radio.standby();
-  Serial.println("SHORT_BURST complete");
-}
+  Serial.println("SHORT_BURST off");
 
-void loop() {
-  // Reset the ESP32 to transmit another single burst.
-  delay(1000);
+  delay(BURST_GAP_MS);
 }
